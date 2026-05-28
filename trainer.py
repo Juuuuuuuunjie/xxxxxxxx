@@ -4,22 +4,7 @@ import torch
 from masking import generate_block_mask, apply_token_mask
 
 
-def fit_target_normalizer(dataset, normalizer):
-    """
-    用训练集统计 target 的 mean/std。
-    """
-    for i in range(len(dataset)):
-        item = dataset[i]
-        targets = item["targets"].numpy()  # [N, C, B, K]
-        normalizer.fit_batch(targets)
-
-
 def build_batch_token_mask(batch_size, num_tokens, cfg, device):
-    """
-    为一个 batch 生成时间 token mask。
-
-    mask 只用于破坏输入，不限制 loss 计算范围。
-    """
     masks = []
 
     for _ in range(batch_size):
@@ -40,6 +25,20 @@ def build_batch_token_mask(batch_size, num_tokens, cfg, device):
     return token_mask
 
 
+def gather_token_normalizer(
+    token_channel_indices,
+    target_mean,
+    target_std,
+):
+    token_mean = target_mean[token_channel_indices]  # [B, S, F]
+    token_std = target_std[token_channel_indices]    # [B, S, F]
+
+    token_mean = token_mean[:, :, :, None]  # [B, S, F, 1]
+    token_std = token_std[:, :, :, None]    # [B, S, F, 1]
+
+    return token_mean, token_std
+
+
 def train_one_epoch(
     model,
     loader,
@@ -55,15 +54,17 @@ def train_one_epoch(
     total_loss = 0.0
 
     for step, batch in enumerate(loader):
-        token_inputs = batch["token_inputs"].to(device)              # [B, N, D]
-        targets = batch["targets"].to(device)                        # [B, N, C, F, K]
-        channel_valid_mask = batch["channel_valid_mask"].to(device)  # [B, C]
+        token_inputs = batch["token_inputs"].to(device)                    # [B, S, L]
+        targets = batch["targets"].to(device)                              # [B, S, F, K]
+        token_channel_indices = batch["token_channel_indices"].to(device)  # [B, S]
+        token_time_indices = batch["token_time_indices"].to(device)        # [B, S]
+        token_valid_mask = batch["token_valid_mask"].to(device)            # [B, S]
 
-        batch_size, num_tokens, _ = token_inputs.shape
+        B, S, L = token_inputs.shape
 
         token_mask = build_batch_token_mask(
-            batch_size=batch_size,
-            num_tokens=num_tokens,
+            batch_size=B,
+            num_tokens=S,
             cfg=cfg,
             device=device,
         )
@@ -73,16 +74,24 @@ def train_one_epoch(
             token_mask=token_mask,
         )
 
-        # target_mean / target_std:
-        # [1, 1, C, F, 1]
-        normalized_targets = (targets - target_mean) / target_std
+        token_mean, token_std = gather_token_normalizer(
+            token_channel_indices=token_channel_indices,
+            target_mean=target_mean,
+            target_std=target_std,
+        )
 
-        pred = model(masked_inputs)  # [B, N, C, F, K]
+        normalized_targets = (targets - token_mean) / token_std
+
+        pred = model(
+            token_inputs=masked_inputs,
+            token_channel_indices=token_channel_indices,
+            token_time_indices=token_time_indices,
+        )
 
         loss = criterion(
             pred=pred,
             target=normalized_targets,
-            channel_valid_mask=channel_valid_mask,
+            token_valid_mask=token_valid_mask,
         )
 
         optimizer.zero_grad()
@@ -116,15 +125,17 @@ def validate_one_epoch(
     total_loss = 0.0
 
     for batch in loader:
-        token_inputs = batch["token_inputs"].to(device)              # [B, N, D]
-        targets = batch["targets"].to(device)                        # [B, N, C, F, K]
-        channel_valid_mask = batch["channel_valid_mask"].to(device)  # [B, C]
+        token_inputs = batch["token_inputs"].to(device)
+        targets = batch["targets"].to(device)
+        token_channel_indices = batch["token_channel_indices"].to(device)
+        token_time_indices = batch["token_time_indices"].to(device)
+        token_valid_mask = batch["token_valid_mask"].to(device)
 
-        batch_size, num_tokens, _ = token_inputs.shape
+        B, S, L = token_inputs.shape
 
         token_mask = build_batch_token_mask(
-            batch_size=batch_size,
-            num_tokens=num_tokens,
+            batch_size=B,
+            num_tokens=S,
             cfg=cfg,
             device=device,
         )
@@ -134,14 +145,24 @@ def validate_one_epoch(
             token_mask=token_mask,
         )
 
-        normalized_targets = (targets - target_mean) / target_std
+        token_mean, token_std = gather_token_normalizer(
+            token_channel_indices=token_channel_indices,
+            target_mean=target_mean,
+            target_std=target_std,
+        )
 
-        pred = model(masked_inputs)
+        normalized_targets = (targets - token_mean) / token_std
+
+        pred = model(
+            token_inputs=masked_inputs,
+            token_channel_indices=token_channel_indices,
+            token_time_indices=token_time_indices,
+        )
 
         loss = criterion(
             pred=pred,
             target=normalized_targets,
-            channel_valid_mask=channel_valid_mask,
+            token_valid_mask=token_valid_mask,
         )
 
         total_loss += loss.item()

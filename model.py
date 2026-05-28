@@ -4,13 +4,13 @@ import torch.nn as nn
 
 class PatchTokenizer(nn.Module):
     """
-    把一个 EEG 时间窗 token 从原始时域输入映射到 Transformer 的 d_model 维度。
+    把每个 channel-time patch 映射成 Transformer token embedding。
 
     输入:
-        [B, N, input_dim]
+        [B, S, L]
 
     输出:
-        [B, N, d_model]
+        [B, S, d_model]
     """
     def __init__(self, input_dim: int, d_model: int, dropout: float = 0.1):
         super().__init__()
@@ -28,7 +28,7 @@ class PatchTokenizer(nn.Module):
 
 class EEGTransformerEncoder(nn.Module):
     """
-    Transformer Encoder，用于建模不同时间 token 之间的上下文关系。
+    Transformer Encoder。
     """
     def __init__(
         self,
@@ -59,35 +59,28 @@ class EEGTransformerEncoder(nn.Module):
         return self.encoder(x)
 
 
-class TimeFreqTrajectoryHead(nn.Module):
+class TimeFreqTokenHead(nn.Module):
     """
-    输出每个 token 内部的频段能量时间轨迹。
+    对每个 channel-time token 输出频段能量时间轨迹。
 
     输入:
-        [B, N, d_model]
+        [B, S, d_model]
 
     输出:
-        [B, N, C, BANDS, K]
-
-    其中:
-        C = EEG 通道数
-        BANDS = 频段数
-        K = 每个 token 内部的目标时间帧数
+        [B, S, F, K]
     """
     def __init__(
         self,
         d_model: int,
-        n_channels: int,
         n_bands: int,
-        frames_per_token: int,
+        frames_per_patch: int,
     ):
         super().__init__()
 
-        self.n_channels = n_channels
         self.n_bands = n_bands
-        self.frames_per_token = frames_per_token
+        self.frames_per_patch = frames_per_patch
 
-        output_dim = n_channels * n_bands * frames_per_token
+        output_dim = n_bands * frames_per_patch
 
         self.head = nn.Sequential(
             nn.Linear(d_model, d_model),
@@ -98,14 +91,13 @@ class TimeFreqTrajectoryHead(nn.Module):
     def forward(self, x):
         out = self.head(x)
 
-        B, N, _ = out.shape
+        B, S, _ = out.shape
 
         out = out.view(
             B,
-            N,
-            self.n_channels,
+            S,
             self.n_bands,
-            self.frames_per_token,
+            self.frames_per_patch,
         )
 
         return out
@@ -113,13 +105,17 @@ class TimeFreqTrajectoryHead(nn.Module):
 
 class EEGPretrainModel(nn.Module):
     """
-    EEG 预训练模型。
+    ViT-style EEG 预训练模型。
+
+    一个 token = 一个通道上的一个时间 patch。
 
     输入:
-        token_inputs: [B, N, D]
+        token_inputs: [B, S, L]
+        token_channel_indices: [B, S]
+        token_time_indices: [B, S]
 
     输出:
-        pred: [B, N, C, BANDS, K]
+        pred: [B, S, F, K]
     """
     def __init__(
         self,
@@ -130,11 +126,14 @@ class EEGPretrainModel(nn.Module):
         mlp_ratio,
         dropout,
         n_channels,
+        n_time_patches,
         n_bands,
-        frames_per_token,
-        max_tokens=1024,
+        frames_per_patch,
     ):
         super().__init__()
+
+        self.n_channels = n_channels
+        self.n_time_patches = n_time_patches
 
         self.tokenizer = PatchTokenizer(
             input_dim=input_dim,
@@ -142,8 +141,14 @@ class EEGPretrainModel(nn.Module):
             dropout=dropout,
         )
 
-        self.pos_embed = nn.Parameter(
-            torch.randn(1, max_tokens, d_model) * 0.02
+        self.channel_embed = nn.Embedding(
+            num_embeddings=n_channels,
+            embedding_dim=d_model,
+        )
+
+        self.time_embed = nn.Embedding(
+            num_embeddings=n_time_patches,
+            embedding_dim=d_model,
         )
 
         self.encoder = EEGTransformerEncoder(
@@ -154,26 +159,33 @@ class EEGPretrainModel(nn.Module):
             dropout=dropout,
         )
 
-        self.head = TimeFreqTrajectoryHead(
+        self.head = TimeFreqTokenHead(
             d_model=d_model,
-            n_channels=n_channels,
             n_bands=n_bands,
-            frames_per_token=frames_per_token,
+            frames_per_patch=frames_per_patch,
         )
 
-    def forward(self, token_inputs):
+    def forward(
+        self,
+        token_inputs,
+        token_channel_indices,
+        token_time_indices,
+    ):
         """
         Args:
-            token_inputs: [B, N, D]
+            token_inputs: [B, S, L]
+            token_channel_indices: [B, S]
+            token_time_indices: [B, S]
 
         Returns:
-            pred: [B, N, C, BANDS, K]
+            pred: [B, S, F, K]
         """
-        B, N, D = token_inputs.shape
-
         x = self.tokenizer(token_inputs)
 
-        x = x + self.pos_embed[:, :N, :]
+        ch_pos = self.channel_embed(token_channel_indices)
+        time_pos = self.time_embed(token_time_indices)
+
+        x = x + ch_pos + time_pos
 
         x = self.encoder(x)
 

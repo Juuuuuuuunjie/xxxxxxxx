@@ -6,7 +6,7 @@ from configs import Config
 from dataset import EEGPretrainDataset, collate_fn, build_mock_samples
 from targets import RunningTargetNormalizer
 from model import EEGPretrainModel
-from losses import BalancedBandTrajectoryLoss
+from losses import BalancedBandTokenTrajectoryLoss
 from trainer import train_one_epoch, validate_one_epoch
 from utils import set_seed, ensure_dir_for_file
 
@@ -18,14 +18,30 @@ def main():
     device = cfg.train.device if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
 
-    # 每个 token 内部的目标时间帧数量 K
-    frames_per_token = int(round(
-        cfg.data.window_seconds / cfg.data.target_frame_seconds
+    patch_len = int(round(cfg.data.patch_seconds * cfg.data.target_sfreq))
+    patch_stride = int(round(cfg.data.patch_stride_seconds * cfg.data.target_sfreq))
+    total_points = int(round(cfg.data.clip_seconds * cfg.data.target_sfreq))
+
+    num_time_patches = int(
+        np.floor((total_points - patch_len) / patch_stride) + 1
+    )
+
+    num_tokens = cfg.data.n_channels * num_time_patches
+
+    frames_per_patch = int(round(
+        cfg.data.patch_seconds / cfg.data.target_frame_seconds
     ))
 
-    print(f"frames_per_token = {frames_per_token}")
+    n_bands = len(cfg.data.band_defs)
 
-    # 1. 构造 mock 数据
+    print(f"patch_len = {patch_len}")
+    print(f"patch_stride = {patch_stride}")
+    print(f"total_points = {total_points}")
+    print(f"num_time_patches = {num_time_patches}")
+    print(f"num_tokens = {num_tokens}")
+    print(f"frames_per_patch = {frames_per_patch}")
+    print(f"n_bands = {n_bands}")
+
     samples = build_mock_samples(
         num_samples=64,
         clip_seconds=cfg.data.clip_seconds,
@@ -34,7 +50,6 @@ def main():
 
     dataset = EEGPretrainDataset(samples, cfg)
 
-    # 2. 划分训练集和验证集
     n_total = len(dataset)
     n_train = int(n_total * 0.8)
     n_val = n_total - n_train
@@ -44,9 +59,6 @@ def main():
         [n_train, n_val],
         generator=torch.Generator().manual_seed(cfg.train.seed),
     )
-
-    # 3. 拟合 target normalizer
-    n_bands = len(cfg.data.band_defs)
 
     normalizer = RunningTargetNormalizer(
         n_channels=cfg.data.n_channels,
@@ -58,30 +70,30 @@ def main():
 
     for i in train_set.indices:
         item = dataset[i]
-        targets = item["targets"].numpy()  # [N, C, B, K]
+
+        targets_flat = item["targets"].numpy()  # [S, F, K]
+
+        C = cfg.data.n_channels
+        N = num_time_patches
+        F = n_bands
+        K = frames_per_patch
+
+        targets = targets_flat.reshape(C, N, F, K)
+
         normalizer.fit_batch(targets)
 
-    # target_mean: [C, B]
-    # target_std:  [C, B]
-    #
-    # 变成可广播到:
-    # targets: [B, N, C, BANDS, K]
-    #
-    # 所以 shape 为:
-    # [1, 1, C, BANDS, 1]
     target_mean = torch.tensor(
         normalizer.mean,
         dtype=torch.float32,
         device=device,
-    )[None, None, :, :, None]
+    )  # [C, F]
 
     target_std = torch.tensor(
         np.sqrt(normalizer.var + cfg.data.eps),
         dtype=torch.float32,
         device=device,
-    )[None, None, :, :, None]
+    )  # [C, F]
 
-    # 4. DataLoader
     train_loader = DataLoader(
         train_set,
         batch_size=cfg.train.batch_size,
@@ -98,43 +110,29 @@ def main():
         collate_fn=collate_fn,
     )
 
-    # 5. 构建模型
-    input_dim = cfg.data.n_channels * int(
-        round(cfg.data.window_seconds * cfg.data.target_sfreq)
-    )
-
-    max_tokens = int(
-        np.floor(
-            (cfg.data.clip_seconds - cfg.data.window_seconds)
-            / cfg.data.window_stride_seconds
-        ) + 1
-    )
-
     model = EEGPretrainModel(
-        input_dim=input_dim,
+        input_dim=patch_len,
         d_model=cfg.model.d_model,
         n_heads=cfg.model.n_heads,
         depth=cfg.model.depth,
         mlp_ratio=cfg.model.mlp_ratio,
         dropout=cfg.model.dropout,
         n_channels=cfg.data.n_channels,
+        n_time_patches=num_time_patches,
         n_bands=n_bands,
-        frames_per_token=frames_per_token,
-        max_tokens=max_tokens,
+        frames_per_patch=frames_per_patch,
     ).to(device)
 
     print(model)
 
-    # 6. 优化器和 loss
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.train.lr,
         weight_decay=cfg.train.weight_decay,
     )
 
-    criterion = BalancedBandTrajectoryLoss()
+    criterion = BalancedBandTokenTrajectoryLoss()
 
-    # 7. 开始训练
     best_val = float("inf")
 
     for epoch in range(cfg.train.num_epochs):
@@ -178,7 +176,11 @@ def main():
                     "target_mean": target_mean.cpu(),
                     "target_std": target_std.cpu(),
                     "config": cfg,
-                    "frames_per_token": frames_per_token,
+                    "patch_len": patch_len,
+                    "patch_stride": patch_stride,
+                    "num_time_patches": num_time_patches,
+                    "num_tokens": num_tokens,
+                    "frames_per_patch": frames_per_patch,
                     "n_bands": n_bands,
                 },
                 cfg.train.save_path,
