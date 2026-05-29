@@ -10,16 +10,29 @@ class EEGPretrainDataset(Dataset):
     """
     EEG 预训练数据集。
 
+    输入 sample:
+        {
+            "signal": np.ndarray [C_in, T],
+            "channel_names": list[str],
+            "sfreq": float,
+        }
+
     输出:
         token_inputs: [S, L]
         targets: [S, F, K]
         token_channel_indices: [S]
         token_time_indices: [S]
         token_valid_mask: [S]
+        channel_valid_mask: [C]
     """
+
     def __init__(self, samples, cfg):
         self.samples = samples
         self.cfg = cfg
+
+        self.target_num_points = int(round(
+            cfg.data.clip_seconds * cfg.data.target_sfreq
+        ))
 
     def __len__(self):
         return len(self.samples)
@@ -31,13 +44,18 @@ class EEGPretrainDataset(Dataset):
         channel_names = item["channel_names"]
         sfreq = item["sfreq"]
 
+        # 1) 预处理到固定 64 通道、固定采样率、固定长度
         signal_64, channel_valid_mask = preprocess_eeg(
             signal=signal,
             channel_names=channel_names,
             orig_sfreq=sfreq,
             target_sfreq=self.cfg.data.target_sfreq,
+            target_num_points=self.target_num_points,
         )
 
+        # signal_64: [64, T]
+
+        # 2) 切 channel-time patch，并生成时频 target
         patches, targets = compute_channel_time_patch_targets(
             signal=signal_64,
             sfreq=self.cfg.data.target_sfreq,
@@ -50,10 +68,13 @@ class EEGPretrainDataset(Dataset):
             eps=self.cfg.data.eps,
         )
 
-        C, N, L = patches.shape
-        F = len(self.cfg.data.band_defs)
-        K = int(round(self.cfg.data.patch_seconds / self.cfg.data.target_frame_seconds))
+        # patches: [C, N, L]
+        # targets: [C, N, F, K]
 
+        C, N, L = patches.shape
+        _, _, F, K = targets.shape
+
+        # 3) flatten 成 token 序列
         token_inputs = patches.reshape(C * N, L).astype(np.float32)
         token_targets = targets.reshape(C * N, F, K).astype(np.float32)
 
@@ -62,9 +83,9 @@ class EEGPretrainDataset(Dataset):
         # c1_t0, c1_t1, ..., c1_tN,
         # ...
         token_channel_indices = np.repeat(np.arange(C), N).astype(np.int64)
-
         token_time_indices = np.tile(np.arange(N), C).astype(np.int64)
 
+        # 4) 根据通道有效性生成 token_valid_mask
         token_valid_mask = channel_valid_mask[token_channel_indices].astype(np.float32)
 
         return {
@@ -93,49 +114,3 @@ def collate_fn(batch):
         "token_valid_mask": token_valid_mask,
         "channel_valid_mask": channel_valid_mask,
     }
-
-
-def build_mock_samples(num_samples=32, clip_seconds=10, sfreq=100):
-    samples = []
-
-    T = int(round(clip_seconds * sfreq))
-
-    base_channels = [
-        "Fp1", "Fp2",
-        "F3", "F4",
-        "C3", "C4",
-        "P3", "P4",
-        "O1", "O2",
-        "Fz", "Cz", "Pz",
-        "T7", "T8", "Oz",
-    ]
-
-    for _ in range(num_samples):
-        c_in = len(base_channels)
-        t = np.arange(T) / sfreq
-
-        signal = []
-
-        for ch in range(c_in):
-            alpha_amp = 0.8 + 0.4 * np.sin(2 * np.pi * 0.3 * t + np.random.rand())
-            theta_amp = 0.4 + 0.2 * np.sin(2 * np.pi * 0.2 * t + np.random.rand())
-            beta_amp = 0.2 + 0.1 * np.sin(2 * np.pi * 0.5 * t + np.random.rand())
-
-            x = (
-                alpha_amp * np.sin(2 * np.pi * 10 * t + np.random.rand()) +
-                theta_amp * np.sin(2 * np.pi * 6 * t + np.random.rand()) +
-                beta_amp * np.sin(2 * np.pi * 20 * t + np.random.rand()) +
-                0.3 * np.random.randn(T)
-            )
-
-            signal.append(x)
-
-        signal = np.stack(signal, axis=0).astype(np.float32)
-
-        samples.append({
-            "signal": signal,
-            "channel_names": base_channels,
-            "sfreq": sfreq,
-        })
-
-    return samples
