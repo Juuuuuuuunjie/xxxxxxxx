@@ -5,11 +5,9 @@ import torch
 def generate_block_mask(
     num_tokens: int,
     mask_ratio: float,
-    min_block_tokens: int,
-    max_block_tokens: int,
 ):
     """
-    生成 token mask。
+    生成随机起始位置的连续块 token mask。
 
     Returns:
         mask: [num_tokens]
@@ -25,26 +23,16 @@ def generate_block_mask(
     target_masked = max(0, min(num_tokens, target_masked))
 
     mask = np.zeros(num_tokens, dtype=np.float32)
-    masked = 0
 
-    while masked < target_masked:
-        block = np.random.randint(min_block_tokens, max_block_tokens + 1)
+    if target_masked == 0:
+        return mask
 
-        start = np.random.randint(
-            0,
-            max(1, num_tokens - block + 1),
-        )
+    # 随机选择起始位置，确保 mask 块不超出边界
+    max_start = num_tokens - target_masked
+    mask_start = np.random.randint(0, max_start + 1)
+    mask_end = mask_start + target_masked
 
-        end = min(num_tokens, start + block)
-
-        newly_masked = (mask[start:end] == 0).sum()
-
-        mask[start:end] = 1.0
-
-        masked += newly_masked
-
-        if mask.sum() >= target_masked:
-            break
+    mask[mask_start:mask_end] = 1.0
 
     return mask
 

@@ -11,8 +11,6 @@ def build_batch_token_mask(batch_size, num_tokens, cfg, device):
         mask = generate_block_mask(
             num_tokens=num_tokens,
             mask_ratio=cfg.mask.mask_ratio,
-            min_block_tokens=cfg.mask.min_block_tokens,
-            max_block_tokens=cfg.mask.max_block_tokens,
         )
         masks.append(mask)
 
@@ -25,20 +23,6 @@ def build_batch_token_mask(batch_size, num_tokens, cfg, device):
     return token_mask
 
 
-def gather_token_normalizer(
-    token_channel_indices,
-    target_mean,
-    target_std,
-):
-    token_mean = target_mean[token_channel_indices]  # [B, S, F]
-    token_std = target_std[token_channel_indices]    # [B, S, F]
-
-    token_mean = token_mean[:, :, :, None]  # [B, S, F, 1]
-    token_std = token_std[:, :, :, None]    # [B, S, F, 1]
-
-    return token_mean, token_std
-
-
 def train_one_epoch(
     model,
     loader,
@@ -46,8 +30,6 @@ def train_one_epoch(
     criterion,
     device,
     cfg,
-    target_mean,
-    target_std,
 ):
     model.train()
 
@@ -74,14 +56,6 @@ def train_one_epoch(
             token_mask=token_mask,
         )
 
-        token_mean, token_std = gather_token_normalizer(
-            token_channel_indices=token_channel_indices,
-            target_mean=target_mean,
-            target_std=target_std,
-        )
-
-        normalized_targets = (targets - token_mean) / token_std
-
         pred = model(
             token_inputs=masked_inputs,
             token_channel_indices=token_channel_indices,
@@ -90,7 +64,7 @@ def train_one_epoch(
 
         loss = criterion(
             pred=pred,
-            target=normalized_targets,
+            target=targets,
             token_valid_mask=token_valid_mask,
         )
 
@@ -117,8 +91,6 @@ def validate_one_epoch(
     criterion,
     device,
     cfg,
-    target_mean,
-    target_std,
 ):
     model.eval()
 
@@ -145,14 +117,6 @@ def validate_one_epoch(
             token_mask=token_mask,
         )
 
-        token_mean, token_std = gather_token_normalizer(
-            token_channel_indices=token_channel_indices,
-            target_mean=target_mean,
-            target_std=target_std,
-        )
-
-        normalized_targets = (targets - token_mean) / token_std
-
         pred = model(
             token_inputs=masked_inputs,
             token_channel_indices=token_channel_indices,
@@ -161,7 +125,7 @@ def validate_one_epoch(
 
         loss = criterion(
             pred=pred,
-            target=normalized_targets,
+            target=targets,
             token_valid_mask=token_valid_mask,
         )
 
