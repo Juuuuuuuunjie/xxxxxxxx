@@ -3,20 +3,20 @@ from dataclasses import dataclass, field
 
 @dataclass
 class DataConfig:
-    """
-    数据相关配置。
-    """
 
-    # 你的 .set 文件路径。
-    # 可以是单个 .set 文件，也可以是多个 .set 文件。
+    # 数据相关配置。
+
     set_paths: list = field(default_factory=lambda: [
         "data/sub01_01_EC.set",
     ])
+
+    lance_path: str = "data/pretrain_processed.lance"
 
     # 是否把 MNE 读出来的 Volt 转成 microvolt。
     # MNE 读 EEG 通常单位是 Volt，数值很小，例如 1e-5。
     # 转成 uV 后更适合模型训练。
     convert_v_to_uv: bool = True
+
 
     # 这里就是把原始很长时间的EEG，按照设定的clip_seconds进行切割，得到多个样本，单位秒。
     clip_seconds: float = 10.0
@@ -59,6 +59,10 @@ class DataConfig:
     ])
 
     eps: float = 1e-6
+
+
+
+
 
 
 @dataclass

@@ -7,8 +7,10 @@ import matplotlib.pyplot as plt
 
 from configs import Config
 from channel_config import STANDARD_64_CHANNELS
-from io_utils import load_multiple_eeglab_sets_as_samples
-from dataset import EEGPretrainDataset, collate_fn, preprocess_all_samples
+
+from dataset import collate_fn
+from lance_dataset import LanceEEGPretrainDataset
+
 from model import EEGPretrainModel
 from losses import BalancedBandTokenTrajectoryLoss
 from trainer import train_one_epoch, validate_one_epoch
@@ -173,43 +175,32 @@ def main():
     for k, v in shape_params.items():
         print(f"{k}: {v}")
 
-    # 1) 读取 .set 文件，切成固定长度的原始 clip
-    print("\n===== Loading Raw EEG Clips =====")
-    raw_samples = load_multiple_eeglab_sets_as_samples(
-        set_paths=cfg.data.set_paths,
-        clip_seconds=cfg.data.clip_seconds,
-        clip_stride_seconds=cfg.data.clip_stride_seconds,
-        convert_v_to_uv=cfg.data.convert_v_to_uv,
-    )
+    # 1) 从 Lance 读取已经预处理好的训练样本
+    print("\n===== Loading Processed EEG Samples From Lance =====")
+    dataset = LanceEEGPretrainDataset(cfg.data.lance_path)
 
-    print(f"Total raw clips: {len(raw_samples)}")
+    print("dataset size:", len(dataset))
 
-    if len(raw_samples) < 2:
+    if len(dataset) < 2:
         raise ValueError(
-            "Too few clips. Need at least 2 for train/val split. "
-            "Reduce cfg.data.clip_seconds or use a longer recording."
+            "Too few samples. Need at least 2 for train/val split. "
+            "Please regenerate Lance with shorter clip_seconds or use longer recordings."
         )
 
-    first = raw_samples[0]
-    print(f"\nFirst raw clip — signal: {first['signal'].shape}, sfreq: {first['sfreq']}")
+    s0 = dataset[0]
+    print("\nFirst Lance sample:")
+    print("  token_inputs:          ", tuple(s0["token_inputs"].shape))
+    print("  targets:               ", tuple(s0["targets"].shape))
+    print("  token_channel_indices: ", tuple(s0["token_channel_indices"].shape))
+    print("  token_time_indices:    ", tuple(s0["token_time_indices"].shape))
+    print("  token_valid_mask:      ", tuple(s0["token_valid_mask"].shape))
+    print("  channel_valid_mask:    ", tuple(s0["channel_valid_mask"].shape))
+    print("  valid channels:        ", int(s0["channel_valid_mask"].sum().item()), "/ 64")
 
-    # 2) 离线预处理所有 clip（对齐通道、重采样、标准化、切patch、算target）
-    print("\n===== Preprocessing All Clips =====")
-    processed_samples = preprocess_all_samples(raw_samples, cfg)
-
-    # 检查第一个处理后样本的 shape
-    s0 = processed_samples[0]
-    print("\nFirst processed sample:")
-    print("  token_inputs:          ", s0["token_inputs"].shape)
-    print("  targets:               ", s0["targets"].shape)
-    print("  token_channel_indices: ", s0["token_channel_indices"].shape)
-    print("  token_time_indices:    ", s0["token_time_indices"].shape)
-    print("  token_valid_mask:      ", s0["token_valid_mask"].shape)
-    print("  channel_valid_mask:    ", s0["channel_valid_mask"].shape)
-    print("  valid channels:        ", int(s0["channel_valid_mask"].sum()), "/ 64")
 
     # 3) 构建 Dataset
-    dataset = EEGPretrainDataset(processed_samples)
+    dataset = LanceEEGPretrainDataset(cfg.data.lance_path)
+
 
     print("dataset size:", len(dataset))
 

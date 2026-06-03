@@ -7,3 +7,7 @@
 然后再按照设定的patch_seconds对样本进行分patch，从而可以输入到ViT。
 
 在每个step，会随机mask一些token（这里已经改回随机mask，而不是固定mask），然后训练模型把对应的完整样本的时频图重构出来。因为之前已经对时频图按通道标准化，所以这里不存在低频主导的问题。
+
+---
+
+更新了convert_set_to_lance.py和lance_dataset.py，可以把原始数据处理好并转成lance格式，主程序直接读取lance格式数据处理。
