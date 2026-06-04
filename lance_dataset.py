@@ -1,19 +1,39 @@
+import json
+import os
+
+import lance
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-import lance
+
+
+def load_storage_options(storage_options_path):
+    with open(storage_options_path, "r", encoding="utf-8") as f:
+        storage_options = json.load(f)
+
+    # Lance / object_store 一般要求 value 是字符串
+    return {k: str(v) for k, v in storage_options.items()}
 
 
 class LanceEEGPretrainDataset(Dataset):
     """
     从 Lance 读取已经预处理好的 EEG 预训练样本。
 
-    返回格式要和 EEGPretrainDataset 完全一致，这样原来的 collate_fn、
-    trainer、model、loss 都不用改。
+    支持本地路径，也支持远程 S3/TOS URI。
     """
 
-    def __init__(self, lance_path):
-        self.ds = lance.dataset(lance_path)
+    def __init__(self, lance_path, storage_options_path=None, storage_options=None):
+        if storage_options is None and storage_options_path is not None:
+            storage_options = load_storage_options(storage_options_path)
+
+        if storage_options is None:
+            self.ds = lance.dataset(lance_path)
+        else:
+            self.ds = lance.dataset(
+                lance_path,
+                storage_options=storage_options,
+            )
+
         self.length = self.ds.count_rows()
 
     def __len__(self):

@@ -177,7 +177,10 @@ def main():
 
     # 1) 从 Lance 读取已经预处理好的训练样本
     print("\n===== Loading Processed EEG Samples From Lance =====")
-    dataset = LanceEEGPretrainDataset(cfg.data.lance_path)
+    dataset = LanceEEGPretrainDataset(
+        lance_path="s3://eeg-pretrain-junjie/datasets/eeg-pretrain/lance/pretrain_processed.lance",
+        storage_options_path="storage_options.json",
+    )
 
     print("dataset size:", len(dataset))
 
@@ -199,8 +202,10 @@ def main():
 
 
     # 3) 构建 Dataset
-    dataset = LanceEEGPretrainDataset(cfg.data.lance_path)
-
+    dataset = LanceEEGPretrainDataset(
+        lance_path="s3://eeg-pretrain-junjie/datasets/eeg-pretrain/lance/pretrain_processed.lance",
+        storage_options_path="./storage_options.json",
+    )
 
     print("dataset size:", len(dataset))
 
