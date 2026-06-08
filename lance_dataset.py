@@ -15,33 +15,41 @@ def load_storage_options(storage_options_path):
     return {k: str(v) for k, v in storage_options.items()}
 
 
+
 class LanceEEGPretrainDataset(Dataset):
     """
-    从 Lance 读取已经预处理好的 EEG 预训练样本。
-
-    支持本地路径，也支持远程 S3/TOS URI。
+    读取离线处理好的 EEG 预训练 Lance。
     """
 
-    def __init__(self, lance_path, storage_options_path=None, storage_options=None):
-        if storage_options is None and storage_options_path is not None:
-            storage_options = load_storage_options(storage_options_path)
+    def __init__(self, lance_path, storage_options=None):
+        self.lance_path = lance_path
+        self.storage_options = storage_options
+        self.ds = None
+        self.length = self._get_length()
 
-        if storage_options is None:
-            self.ds = lance.dataset(lance_path)
-        else:
-            self.ds = lance.dataset(
-                lance_path,
-                storage_options=storage_options,
-            )
+    def _open(self):
+        if self.ds is None:
+            if self.storage_options is None:
+                self.ds = lance.dataset(self.lance_path)
+            else:
+                self.ds = lance.dataset(
+                    self.lance_path,
+                    storage_options=self.storage_options,
+                )
+        return self.ds
 
-        self.length = self.ds.count_rows()
+    def _get_length(self):
+        ds = self._open()
+        return ds.count_rows()
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
-        batch = self.ds.take(
-            [idx],
+        ds = self._open()
+
+        batch = ds.take(
+            indices=[idx],
             columns=[
                 "num_tokens",
                 "patch_len",
@@ -71,10 +79,25 @@ class LanceEEGPretrainDataset(Dataset):
         targets = np.asarray(row["targets"], dtype=np.float32)
         targets = targets.reshape(num_tokens, n_bands, frames_per_patch)
 
-        token_channel_indices = np.asarray(row["token_channel_indices"], dtype=np.int64)
-        token_time_indices = np.asarray(row["token_time_indices"], dtype=np.int64)
-        token_valid_mask = np.asarray(row["token_valid_mask"], dtype=np.float32)
-        channel_valid_mask = np.asarray(row["channel_valid_mask"], dtype=np.float32)
+        token_channel_indices = np.asarray(
+            row["token_channel_indices"],
+            dtype=np.int64,
+        )
+
+        token_time_indices = np.asarray(
+            row["token_time_indices"],
+            dtype=np.int64,
+        )
+
+        token_valid_mask = np.asarray(
+            row["token_valid_mask"],
+            dtype=np.float32,
+        )
+
+        channel_valid_mask = np.asarray(
+            row["channel_valid_mask"],
+            dtype=np.float32,
+        )
 
         if channel_valid_mask.shape[0] != n_channels:
             raise ValueError(

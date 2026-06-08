@@ -11,3 +11,14 @@
 ---
 
 更新了convert_set_to_lance.py和lance_dataset.py，可以把原始数据处理好并转成lance格式，主程序直接读取lance格式数据处理。
+
+---
+
+为了能用上服务器的数据，同时避免一边做时频变换一边训练，现在主要把服务器的数据过一遍我们的预处理，然后再做预训练。
+
+为了实现这一点：
+
+* 新增了build_processed_lance_from_raw.py，主要用于把服务器的lance数据，完整走一遍我们的预处理，生成一组输入输出的数据，输入是我们处理过的EEG，输出是EEG对应的时频图。
+
+* checkTransformedLanceData.py可以用于检查处理后的lance数据是否正常
+

@@ -177,9 +177,12 @@ def main():
 
     # 1) 从 Lance 读取已经预处理好的训练样本
     print("\n===== Loading Processed EEG Samples From Lance =====")
+
     dataset = LanceEEGPretrainDataset(
-        lance_path="s3://eeg-pretrain-junjie/datasets/eeg-pretrain/lance/pretrain_processed.lance",
-        storage_options_path="storage_options.json",
+        lance_path=(
+            "/Users/junjieyu/Desktop/现有论文/EEG预训练/预训练代码/codeV6/"
+            "serverData/eeg_openneuro_76ch_val_processed.lance"
+        )
     )
 
     print("dataset size:", len(dataset))
