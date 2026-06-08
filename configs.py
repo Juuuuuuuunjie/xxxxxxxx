@@ -93,7 +93,7 @@ class TrainConfig:
     训练相关配置。
     """
     seed: int = 42
-    device: str = "cuda"
+    device: str = "mps"
 
     batch_size: int = 16
     num_workers: int = 0

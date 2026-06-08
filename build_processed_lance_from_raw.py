@@ -2,7 +2,6 @@ import os
 import json
 import math
 import shutil
-from pathlib import Path
 from typing import Dict, List, Tuple, Any
 
 import numpy as np
@@ -11,74 +10,51 @@ import lance
 
 from scipy.signal import spectrogram, resample_poly
 
+from configs import Config
+
 
 # =============================================================================
-# 0. 基础配置
+# 0. 从 configs.py 读取配置
 # =============================================================================
 
-RAW_LANCE_PATH = (
-    "./serverData/eeg_openneuro_76ch_val.lance"
-)
+CFG = Config()
+DATA_CFG = CFG.data
 
-OUTPUT_LANCE_PATH = (
-    "./serverData/eeg_openneuro_76ch_val_processed.lance"
-)
 
-# 这里改成你上传/下载的 electrode id -> channel name 的 json 路径
-# json 应该类似：
-# {
-#   "0": "PAD",
-#   "1": "UNK_EEG",
-#   "2": "Fp1",
-#   ...
-# }
-ELECTRODE_VOCAB_PATH = (
-    "./electrode_vocab.json"
-)
+# =============================================================================
+# 1. 路径配置
+# =============================================================================
 
-# 如果你的原始 Lance signals 是除以 200 后的值，则这里设 True。
-# 你之前读出来数值大约 0.001~0.01，很可能是 clip_divide_200 后的值。
+# 原始 Lance 路径。
+# 这个是服务器原始数据 Lance，不是 processed Lance。
+RAW_LANCE_PATH = "./serverData/eeg_openneuro_76ch_val.lance"
+
+# 输出 processed Lance 路径。
+# 这里使用 configs.py 里的 data.lance_path。
+# 确保 train_real_set.py 里也读取同一个 cfg.data.lance_path。
+OUTPUT_LANCE_PATH = DATA_CFG.lance_path
+
+# electrode id -> channel name 的 json 路径。
+ELECTRODE_VOCAB_PATH = "./electrode_vocab.json"
+
+
+# =============================================================================
+# 2. 原始 Lance 相关配置
+# =============================================================================
+
+# 如果原始 Lance signals 是除以 200 后的值，则这里设 True。
 DENORM_CLIP_DIVIDE_200 = True
 
-# 原始服务器数据采样率。根据你现在这条数据 2000 点通常对应 10 秒，推测是 200Hz。
+# 原始服务器数据采样率。
+# 注意：你的 configs.py 里目前没有 orig_sfreq 字段，所以这里仍然保留本地配置。
+# 如果你想完全统一，也可以在 DataConfig 里加：
+# orig_sfreq: float = 200.0
 ORIG_SFREQ = 200.0
 
-# 模型目标采样率
-TARGET_SFREQ = 200.0
-
-# 每条 clip 的长度，秒。
-# 你现在每条样本 reshape 后是 [76, 2000]，如果采样率 200Hz，就是 10 秒。
-CLIP_SECONDS = 10.0
-
-# EEG patch 参数
-PATCH_SECONDS = 1.0
-PATCH_STRIDE_SECONDS = 1.0
-
-# target 时频图每个 patch 里面取多少时间帧。
-# 如果 target_frame_seconds=0.1，1秒 patch 会得到 K=10 帧。
-TARGET_FRAME_SECONDS = 0.1
-
-# STFT 参数
-STFT_WINDOW_SECONDS = 1.0
-STFT_HOP_SECONDS = 0.1
-
-# 频段定义
-# 你可以按你原 cfg.data.band_defs 修改。
-BAND_DEFS = [
-    ("delta", 1.0, 4.0),
-    ("theta", 4.0, 8.0),
-    ("alpha", 8.0, 13.0),
-    ("beta", 13.0, 30.0),
-    ("gamma", 30.0, 45.0),
-]
-
-EPS = 1e-6
-
 # 离线转换 batch size。
-# batch_size 越大，读取 Lance 和写 Lance 效率越高，但内存占用越大。
 BATCH_SIZE = 64
 
-# 是否覆盖已有 output lance
+# 是否覆盖已有 output lance。
 OVERWRITE = True
 
 # 遇到 bad_channel_mask=True 的通道，是否跳过。
@@ -86,15 +62,105 @@ DROP_BAD_CHANNELS = True
 
 
 # =============================================================================
-# 1. 你指定的标准 64 通道模板
+# 3. 从 configs.py 读取数据处理参数
 # =============================================================================
-# 重点：
-# 1. 这个列表的顺序就是最终 [64, T] 的通道顺序。
-# 2. 模型里的 channel index 0~63 就对应这里的顺序。
-# 3. 如果你原来 preprocessing.py 里面已经有标准 64 通道列表，建议把这里改成完全一致。
-#
-# 注意：不同项目的 64 通道模板可能不一样。
-# 你一定要确认这里和你的模型 embedding / downstream 设置是一致的。
+
+CONVERT_V_TO_UV = DATA_CFG.convert_v_to_uv
+
+CLIP_SECONDS = DATA_CFG.clip_seconds
+CLIP_STRIDE_SECONDS = DATA_CFG.clip_stride_seconds
+
+TARGET_SFREQ = DATA_CFG.target_sfreq
+
+N_CHANNELS = DATA_CFG.n_channels
+
+PATCH_SECONDS = DATA_CFG.patch_seconds
+PATCH_STRIDE_SECONDS = DATA_CFG.patch_stride_seconds
+
+TARGET_FRAME_SECONDS = DATA_CFG.target_frame_seconds
+
+STFT_WINDOW_SECONDS = DATA_CFG.stft_window_seconds
+STFT_HOP_SECONDS = DATA_CFG.stft_hop_seconds
+
+BAND_DEFS = DATA_CFG.band_defs
+N_BANDS = len(BAND_DEFS)
+
+EPS = DATA_CFG.eps
+
+
+# =============================================================================
+# 4. 派生 shape 参数
+# =============================================================================
+
+TOTAL_POINTS = int(round(CLIP_SECONDS * TARGET_SFREQ))
+
+PATCH_LEN = int(round(PATCH_SECONDS * TARGET_SFREQ))
+PATCH_STRIDE = int(round(PATCH_STRIDE_SECONDS * TARGET_SFREQ))
+
+NUM_TIME_PATCHES = int(np.floor((TOTAL_POINTS - PATCH_LEN) / PATCH_STRIDE) + 1)
+NUM_TOKENS = N_CHANNELS * NUM_TIME_PATCHES
+
+# 关键：target 的最后一维 K 来自 TARGET_FRAME_SECONDS，而不是 STFT_HOP_SECONDS。
+FRAMES_PER_PATCH = int(round(PATCH_SECONDS / TARGET_FRAME_SECONDS))
+
+STFT_WINDOW_POINTS = int(round(STFT_WINDOW_SECONDS * TARGET_SFREQ))
+STFT_HOP_POINTS = int(round(STFT_HOP_SECONDS * TARGET_SFREQ))
+
+
+print("\n===== Build Processed Lance Config From configs.py =====")
+print("RAW_LANCE_PATH:", RAW_LANCE_PATH)
+print("OUTPUT_LANCE_PATH:", OUTPUT_LANCE_PATH)
+print("ELECTRODE_VOCAB_PATH:", ELECTRODE_VOCAB_PATH)
+
+print("\n===== Raw Lance Config =====")
+print("ORIG_SFREQ:", ORIG_SFREQ)
+print("DENORM_CLIP_DIVIDE_200:", DENORM_CLIP_DIVIDE_200)
+print("DROP_BAD_CHANNELS:", DROP_BAD_CHANNELS)
+
+print("\n===== DataConfig =====")
+print("CONVERT_V_TO_UV:", CONVERT_V_TO_UV)
+print("CLIP_SECONDS:", CLIP_SECONDS)
+print("CLIP_STRIDE_SECONDS:", CLIP_STRIDE_SECONDS)
+print("TARGET_SFREQ:", TARGET_SFREQ)
+print("N_CHANNELS:", N_CHANNELS)
+print("PATCH_SECONDS:", PATCH_SECONDS)
+print("PATCH_STRIDE_SECONDS:", PATCH_STRIDE_SECONDS)
+print("TARGET_FRAME_SECONDS:", TARGET_FRAME_SECONDS)
+print("STFT_WINDOW_SECONDS:", STFT_WINDOW_SECONDS)
+print("STFT_HOP_SECONDS:", STFT_HOP_SECONDS)
+print("BAND_DEFS:", BAND_DEFS)
+print("N_BANDS:", N_BANDS)
+print("EPS:", EPS)
+
+print("\n===== Derived Shape Params =====")
+print("TOTAL_POINTS:", TOTAL_POINTS)
+print("PATCH_LEN:", PATCH_LEN)
+print("PATCH_STRIDE:", PATCH_STRIDE)
+print("NUM_TIME_PATCHES:", NUM_TIME_PATCHES)
+print("NUM_TOKENS:", NUM_TOKENS)
+print("FRAMES_PER_PATCH:", FRAMES_PER_PATCH)
+print("STFT_WINDOW_POINTS:", STFT_WINDOW_POINTS)
+print("STFT_HOP_POINTS:", STFT_HOP_POINTS)
+
+
+assert N_CHANNELS == 64, f"Current script expects 64 standard channels, got {N_CHANNELS}"
+assert TOTAL_POINTS > 0
+assert PATCH_LEN > 0
+assert PATCH_STRIDE > 0
+assert TOTAL_POINTS >= PATCH_LEN
+assert NUM_TIME_PATCHES > 0
+assert NUM_TOKENS == N_CHANNELS * NUM_TIME_PATCHES
+assert FRAMES_PER_PATCH > 0
+assert N_BANDS == len(BAND_DEFS)
+assert abs(FRAMES_PER_PATCH * TARGET_FRAME_SECONDS - PATCH_SECONDS) < 1e-6, (
+    f"PATCH_SECONDS={PATCH_SECONDS} cannot be evenly divided by "
+    f"TARGET_FRAME_SECONDS={TARGET_FRAME_SECONDS}"
+)
+
+
+# =============================================================================
+# 5. 标准 64 通道模板
+# =============================================================================
 
 STANDARD_64_CHANNELS = [
     "Fp1", "Fpz", "Fp2",
@@ -109,17 +175,16 @@ STANDARD_64_CHANNELS = [
     "A1", "A2",
 ]
 
-assert len(STANDARD_64_CHANNELS) == 64, f"STANDARD_64_CHANNELS length = {len(STANDARD_64_CHANNELS)}, not 64"
+assert len(STANDARD_64_CHANNELS) == 64, (
+    f"STANDARD_64_CHANNELS length = {len(STANDARD_64_CHANNELS)}, not 64"
+)
 
 
 # =============================================================================
-# 2. 通道名处理
+# 6. 通道名处理
 # =============================================================================
 
 def load_electrode_vocab(path: str) -> Dict[int, str]:
-    """
-    读取 electrode id -> channel name 的 json。
-    """
     with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
@@ -131,28 +196,14 @@ def load_electrode_vocab(path: str) -> Dict[int, str]:
 
 
 def normalize_channel_name(name: str) -> str:
-    """
-    对 EEG 通道名做归一化，主要处理大小写和老式命名。
-
-    例如：
-        FP1 -> Fp1
-        FPZ -> Fpz
-        T3  -> T7
-        T4  -> T8
-        T5  -> P7
-        T6  -> P8
-    """
     if name is None:
         return "UNK_EEG"
 
     name = str(name).strip()
 
-    # 去掉常见前缀
-    # 有些 EDF/BDF 里可能叫 EEG Fp1、EEG Fp1-REF 等。
     if name.startswith("EEG "):
         name = name[4:].strip()
 
-    # 去掉参考后缀，按需要可继续扩展
     for suffix in ["-REF", "-LE", "-A1", "-A2", "-M1", "-M2"]:
         if name.endswith(suffix):
             name = name[: -len(suffix)]
@@ -235,7 +286,6 @@ def normalize_channel_name(name: str) -> str:
         "M2": "A2",
     }
 
-    # 老式 10-20 命名
     old_1020_alias = {
         "T3": "T7",
         "T4": "T8",
@@ -258,9 +308,6 @@ def electrode_ids_to_channel_names(
     electrode_ids: np.ndarray,
     id2name: Dict[int, str],
 ) -> List[str]:
-    """
-    把 electrode_ids 转成 channel_names。
-    """
     channel_names = []
 
     for eid in electrode_ids.tolist():
@@ -278,7 +325,7 @@ def electrode_ids_to_channel_names(
 
 
 # =============================================================================
-# 3. 原始 signals 解析与通道映射
+# 7. 原始 signals 解析与通道映射
 # =============================================================================
 
 def parse_raw_lance_row(
@@ -288,14 +335,7 @@ def parse_raw_lance_row(
     denorm_clip_divide_200: bool = True,
     drop_bad_channels: bool = True,
 ) -> Dict[str, Any]:
-    """
-    把 Lance 原始 row 转成：
-        signal: [C_in, T]
-        channel_names: list[str]
-        sfreq: float
 
-    原始 row 中 signals 是 flatten 后的一维 list。
-    """
     n_channels = int(row["channel_counts"])
 
     signals_flat = np.asarray(row["signals"], dtype=np.float32)
@@ -333,7 +373,6 @@ def parse_raw_lance_row(
         "channel_names": channel_names,
         "sfreq": float(orig_sfreq),
 
-        # metadata
         "sample_id": row.get("sample_id", -1),
         "subject_id": row.get("subject_id", ""),
         "edf_relpath": row.get("edf_relpath", ""),
@@ -350,20 +389,7 @@ def align_to_standard_channels(
     channel_names: List[str],
     standard_channels: List[str],
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    把输入 EEG 映射到标准 64 通道模板。
 
-    Args:
-        signal: [C_in, T]
-        channel_names: len = C_in
-        standard_channels: len = 64
-
-    Returns:
-        aligned_signal: [64, T]
-        channel_valid_mask: [64]
-            1 表示该标准通道在原数据中存在；
-            0 表示该标准通道缺失，后面 loss 不计算。
-    """
     C_in, T = signal.shape
     C_std = len(standard_channels)
 
@@ -382,12 +408,10 @@ def align_to_standard_channels(
             continue
 
         if src_name not in std_name_to_idx:
-            # 输入里有，但标准 64 模板不需要，直接忽略
             continue
 
         dst_idx = std_name_to_idx[src_name]
 
-        # 如果有重复通道，这里做平均
         aligned_sum[dst_idx] += signal[src_idx]
         aligned_count[dst_idx] += 1.0
 
@@ -403,7 +427,7 @@ def align_to_standard_channels(
 
 
 # =============================================================================
-# 4. 重采样、padding/crop、标准化
+# 8. 重采样、padding/crop、标准化
 # =============================================================================
 
 def resample_signal(
@@ -411,15 +435,7 @@ def resample_signal(
     orig_sfreq: float,
     target_sfreq: float,
 ) -> np.ndarray:
-    """
-    重采样 EEG。
 
-    Args:
-        signal: [C, T]
-
-    Returns:
-        resampled: [C, T_new]
-    """
     if abs(orig_sfreq - target_sfreq) < 1e-6:
         return signal.astype(np.float32)
 
@@ -438,15 +454,7 @@ def pad_or_crop_signal(
     signal: np.ndarray,
     target_num_points: int,
 ) -> np.ndarray:
-    """
-    把信号 padding/crop 到固定长度。
 
-    Args:
-        signal: [C, T]
-
-    Returns:
-        signal_fixed: [C, target_num_points]
-    """
     C, T = signal.shape
 
     if T == target_num_points:
@@ -465,16 +473,7 @@ def standardize_signal_by_channel(
     channel_valid_mask: np.ndarray,
     eps: float = 1e-8,
 ) -> np.ndarray:
-    """
-    对原始信号按通道标准化。
 
-    Args:
-        signal: [C, T]
-        channel_valid_mask: [C]
-
-    Returns:
-        standardized_signal: [C, T]
-    """
     out = np.zeros_like(signal, dtype=np.float32)
 
     valid = channel_valid_mask.astype(bool)
@@ -488,15 +487,13 @@ def standardize_signal_by_channel(
     std = x.std(axis=1, keepdims=True)
 
     out[valid] = (x - mean) / (std + eps)
-
-    # 无效通道保持 0
     out[~valid] = 0.0
 
     return out.astype(np.float32)
 
 
 # =============================================================================
-# 5. 时频表示
+# 9. 时频表示
 # =============================================================================
 
 def _next_power_of_two(x: int) -> int:
@@ -514,16 +511,6 @@ def compute_continuous_bandpower_trajectory(
     stft_hop_seconds: float,
     eps: float = 1e-6,
 ):
-    """
-    对整段 EEG 计算连续频段能量轨迹。
-
-    Args:
-        signal: [C, T]
-
-    Returns:
-        band_power: [C, F, S]
-        stft_times: [S]
-    """
     sfreq = float(sfreq)
 
     nperseg = int(round(stft_window_seconds * sfreq))
@@ -558,11 +545,7 @@ def compute_continuous_bandpower_trajectory(
         one_band = np.log(one_band + eps).astype(np.float32)
         band_list.append(one_band)
 
-    # band_list: list of [C, S]
-    # stack -> [F, C, S]
     band_power = np.stack(band_list, axis=0)
-
-    # [F, C, S] -> [C, F, S]
     band_power = np.transpose(band_power, (1, 0, 2)).astype(np.float32)
 
     return band_power, stft_times.astype(np.float32)
@@ -577,15 +560,6 @@ def compute_continuous_timefreq_representation(
     target_sfreq: float,
     eps: float = 1e-6,
 ):
-    """
-    计算连续时频表示，并插值回原始时间分辨率。
-
-    Args:
-        signal: [C, T]
-
-    Returns:
-        timefreq: [C, F, T]
-    """
     band_power, stft_times = compute_continuous_bandpower_trajectory(
         signal=signal,
         sfreq=sfreq,
@@ -620,16 +594,7 @@ def standardize_timefreq(
     channel_valid_mask: np.ndarray,
     eps: float = 1e-8,
 ) -> np.ndarray:
-    """
-    对时频表示做标准化，让不同频段 scale 接近，避免低频主导。
 
-    Args:
-        timefreq: [C, F, T]
-        channel_valid_mask: [C]
-
-    Returns:
-        standardized_timefreq: [C, F, T]
-    """
     out = np.zeros_like(timefreq, dtype=np.float32)
 
     valid = channel_valid_mask.astype(bool)
@@ -637,21 +602,19 @@ def standardize_timefreq(
     if valid.sum() == 0:
         return out
 
-    x = timefreq[valid]  # [C_valid, F, T]
+    x = timefreq[valid]
 
     mean = x.mean(axis=2, keepdims=True)
     std = x.std(axis=2, keepdims=True)
 
     out[valid] = (x - mean) / (std + eps)
-
-    # 无效通道保持 0
     out[~valid] = 0.0
 
     return out.astype(np.float32)
 
 
 # =============================================================================
-# 6. patch 切割和 target 生成
+# 10. patch 切割和 target 生成
 # =============================================================================
 
 def compute_num_patches(
@@ -670,15 +633,7 @@ def cut_signal_patches(
     patch_seconds: float,
     patch_stride_seconds: float,
 ) -> np.ndarray:
-    """
-    从标准化 EEG 中切 patch。
 
-    Args:
-        signal: [C, T]
-
-    Returns:
-        patches: [C, N, L]
-    """
     C, T = signal.shape
 
     patch_len = int(round(patch_seconds * sfreq))
@@ -710,15 +665,7 @@ def generate_targets_from_timefreq(
     patch_stride_seconds: float,
     target_frame_seconds: float,
 ) -> np.ndarray:
-    """
-    从连续时频表示中生成 MAE 拟合 target。
 
-    Args:
-        timefreq_repr: [C, F, T]
-
-    Returns:
-        targets: [C, N, F, K]
-    """
     C, F, T = timefreq_repr.shape
 
     patch_len = int(round(patch_seconds * sfreq))
@@ -730,6 +677,7 @@ def generate_targets_from_timefreq(
         patch_stride=patch_stride,
     )
 
+    # 关键：K 来自 target_frame_seconds。
     K = int(round(patch_seconds / target_frame_seconds))
 
     if N == 0:
@@ -737,6 +685,9 @@ def generate_targets_from_timefreq(
 
     targets = np.zeros((C, N, F, K), dtype=np.float32)
 
+    # 在 patch 内取 K 个时间点。
+    # patch_seconds=1.0, target_frame_seconds=0.2 -> K=5
+    # patch_len=100 -> indices approximately [0, 24, 49, 74, 99]
     base_indices = np.linspace(0, patch_len - 1, K).astype(np.int64)
 
     for n in range(N):
@@ -748,64 +699,42 @@ def generate_targets_from_timefreq(
 
 
 # =============================================================================
-# 7. 单样本完整预处理
+# 11. 单样本完整预处理
 # =============================================================================
 
 def preprocess_one_raw_sample(
     raw_sample: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    对一个原始样本做完整预处理。
 
-    输入 raw_sample:
-        signal: [C_in, T]
-        channel_names: list[str]
-        sfreq: float
-
-    输出 processed sample:
-        token_inputs: [S, L]
-        targets: [S, F, K]
-        token_channel_indices: [S]
-        token_time_indices: [S]
-        token_valid_mask: [S]
-        channel_valid_mask: [64]
-    """
     signal = raw_sample["signal"]
     channel_names = raw_sample["channel_names"]
     orig_sfreq = float(raw_sample["sfreq"])
 
-    target_num_points = int(round(CLIP_SECONDS * TARGET_SFREQ))
+    target_num_points = TOTAL_POINTS
 
-    # 1) 通道映射到 64 通道模板
     signal_64, channel_valid_mask = align_to_standard_channels(
         signal=signal,
         channel_names=channel_names,
         standard_channels=STANDARD_64_CHANNELS,
     )
-    # signal_64: [64, T]
-    # channel_valid_mask: [64]
 
-    # 2) 重采样
     signal_64 = resample_signal(
         signal=signal_64,
         orig_sfreq=orig_sfreq,
         target_sfreq=TARGET_SFREQ,
     )
 
-    # 3) padding/crop 到固定长度
     signal_64 = pad_or_crop_signal(
         signal=signal_64,
         target_num_points=target_num_points,
     )
 
-    # 4) 按通道标准化原始 EEG，作为模型输入的基础
     signal_64 = standardize_signal_by_channel(
         signal=signal_64,
         channel_valid_mask=channel_valid_mask,
         eps=1e-8,
     )
 
-    # 5) 计算连续时频表示 [64, F, T]
     timefreq_repr = compute_continuous_timefreq_representation(
         signal=signal_64,
         sfreq=TARGET_SFREQ,
@@ -816,23 +745,19 @@ def preprocess_one_raw_sample(
         eps=EPS,
     )
 
-    # 6) 标准化时频表示，避免不同频段 scale 差异太大
     timefreq_repr = standardize_timefreq(
         timefreq=timefreq_repr,
         channel_valid_mask=channel_valid_mask,
         eps=1e-8,
     )
 
-    # 7) 切 EEG patch，作为 token_inputs
     signal_patches = cut_signal_patches(
         signal=signal_64,
         sfreq=TARGET_SFREQ,
         patch_seconds=PATCH_SECONDS,
         patch_stride_seconds=PATCH_STRIDE_SECONDS,
     )
-    # [64, N, L]
 
-    # 8) 根据时频表示生成每个 patch 对应的 target
     targets = generate_targets_from_timefreq(
         timefreq_repr=timefreq_repr,
         sfreq=TARGET_SFREQ,
@@ -840,25 +765,19 @@ def preprocess_one_raw_sample(
         patch_stride_seconds=PATCH_STRIDE_SECONDS,
         target_frame_seconds=TARGET_FRAME_SECONDS,
     )
-    # [64, N, F, K]
 
     C, N, L = signal_patches.shape
     _, _, F, K = targets.shape
 
-    # 9) flatten 通道 × 时间 patch -> token 序列
-    # token_inputs: [S, L], S = C * N
     token_inputs = signal_patches.reshape(C * N, L).astype(np.float32)
-
-    # targets: [S, F, K]
     token_targets = targets.reshape(C * N, F, K).astype(np.float32)
 
     token_channel_indices = np.repeat(np.arange(C), N).astype(np.int64)
     token_time_indices = np.tile(np.arange(N), C).astype(np.int64)
 
-    # 无效通道对应的所有 token 不计算 loss
     token_valid_mask = channel_valid_mask[token_channel_indices].astype(np.float32)
 
-    return {
+    processed = {
         "token_inputs": token_inputs,
         "targets": token_targets,
         "token_channel_indices": token_channel_indices,
@@ -866,7 +785,6 @@ def preprocess_one_raw_sample(
         "token_valid_mask": token_valid_mask,
         "channel_valid_mask": channel_valid_mask.astype(np.float32),
 
-        # shape metadata
         "num_tokens": int(C * N),
         "patch_len": int(L),
         "n_bands": int(F),
@@ -875,22 +793,33 @@ def preprocess_one_raw_sample(
         "num_patches": int(N),
     }
 
+    # 强制检查，防止又生成旧 shape。
+    assert processed["patch_len"] == PATCH_LEN, (
+        f"patch_len mismatch: got {processed['patch_len']}, expected {PATCH_LEN}"
+    )
+    assert processed["frames_per_patch"] == FRAMES_PER_PATCH, (
+        f"frames_per_patch mismatch: got {processed['frames_per_patch']}, "
+        f"expected {FRAMES_PER_PATCH}"
+    )
+    assert processed["n_bands"] == N_BANDS, (
+        f"n_bands mismatch: got {processed['n_bands']}, expected {N_BANDS}"
+    )
+    assert processed["num_tokens"] == NUM_TOKENS, (
+        f"num_tokens mismatch: got {processed['num_tokens']}, expected {NUM_TOKENS}"
+    )
+
+    return processed
+
 
 # =============================================================================
-# 8. 写入 Lance 的 row 构造
+# 12. 写入 Lance 的 row 构造
 # =============================================================================
 
 def processed_to_lance_row(
     processed: Dict[str, Any],
     raw_sample: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    把 processed sample 转成 Lance 可写入的一行。
 
-    注意：
-    token_inputs 和 targets 都 flatten 成一维 list 保存。
-    读取时再根据 num_tokens/patch_len/n_bands/frames_per_patch reshape。
-    """
     token_inputs = processed["token_inputs"].astype(np.float32)
     targets = processed["targets"].astype(np.float32)
 
@@ -900,7 +829,6 @@ def processed_to_lance_row(
     channel_valid_mask = processed["channel_valid_mask"].astype(np.float32)
 
     row = {
-        # shape metadata
         "num_tokens": int(processed["num_tokens"]),
         "patch_len": int(processed["patch_len"]),
         "n_bands": int(processed["n_bands"]),
@@ -908,17 +836,14 @@ def processed_to_lance_row(
         "n_channels": int(processed["n_channels"]),
         "num_patches": int(processed["num_patches"]),
 
-        # model input / target
         "token_inputs": token_inputs.reshape(-1).tolist(),
         "targets": targets.reshape(-1).tolist(),
 
-        # indices / masks
         "token_channel_indices": token_channel_indices.reshape(-1).tolist(),
         "token_time_indices": token_time_indices.reshape(-1).tolist(),
         "token_valid_mask": token_valid_mask.reshape(-1).tolist(),
         "channel_valid_mask": channel_valid_mask.reshape(-1).tolist(),
 
-        # metadata
         "sample_id": int(raw_sample.get("sample_id", -1)),
         "global_idx": int(raw_sample.get("global_idx", -1)),
         "subject_id": str(raw_sample.get("subject_id", "")),
@@ -928,7 +853,6 @@ def processed_to_lance_row(
         "shard_name": str(raw_sample.get("shard_name", "")),
         "dataset_key": str(raw_sample.get("dataset_key", "")),
 
-        # debug 信息
         "valid_channel_count": int(channel_valid_mask.sum()),
     }
 
@@ -936,7 +860,7 @@ def processed_to_lance_row(
 
 
 # =============================================================================
-# 9. 主转换函数
+# 13. 主转换函数
 # =============================================================================
 
 def build_processed_lance():
@@ -944,7 +868,7 @@ def build_processed_lance():
     output_lance_path = OUTPUT_LANCE_PATH
     electrode_vocab_path = ELECTRODE_VOCAB_PATH
 
-    print("===== Offline EEG Lance Conversion =====")
+    print("\n===== Offline EEG Lance Conversion =====")
     print("raw_lance_path:", raw_lance_path)
     print("output_lance_path:", output_lance_path)
     print("electrode_vocab_path:", electrode_vocab_path)
@@ -954,6 +878,10 @@ def build_processed_lance():
 
     if not os.path.exists(electrode_vocab_path):
         raise FileNotFoundError(f"Electrode vocab json not found: {electrode_vocab_path}")
+
+    output_parent = os.path.dirname(output_lance_path)
+    if output_parent:
+        os.makedirs(output_parent, exist_ok=True)
 
     if OVERWRITE and os.path.exists(output_lance_path):
         print(f"Removing existing output Lance: {output_lance_path}")
@@ -1039,6 +967,8 @@ def build_processed_lance():
                     print("patch_len:", processed["patch_len"])
                     print("n_bands:", processed["n_bands"])
                     print("frames_per_patch:", processed["frames_per_patch"])
+                    print("n_channels:", processed["n_channels"])
+                    print("num_patches:", processed["num_patches"])
 
             except Exception as e:
                 skipped += 1
@@ -1083,6 +1013,7 @@ def build_processed_lance():
         print(out_ds.schema)
 
         first = out_ds.take(indices=[0]).to_pylist()[0]
+
         print("\n===== First Processed Row Check =====")
         print("num_tokens:", first["num_tokens"])
         print("patch_len:", first["patch_len"])
@@ -1095,6 +1026,37 @@ def build_processed_lance():
         print("len(token_valid_mask):", len(first["token_valid_mask"]))
         print("len(channel_valid_mask):", len(first["channel_valid_mask"]))
         print("valid_channel_count:", first["valid_channel_count"])
+
+        expected_token_inputs_len = NUM_TOKENS * PATCH_LEN
+        expected_targets_len = NUM_TOKENS * N_BANDS * FRAMES_PER_PATCH
+
+        print("\n===== Expected Length Check =====")
+        print("expected len(token_inputs):", expected_token_inputs_len)
+        print("expected len(targets):", expected_targets_len)
+
+        assert int(first["num_tokens"]) == NUM_TOKENS
+        assert int(first["patch_len"]) == PATCH_LEN
+        assert int(first["n_bands"]) == N_BANDS
+        assert int(first["frames_per_patch"]) == FRAMES_PER_PATCH
+        assert int(first["n_channels"]) == N_CHANNELS
+        assert int(first["num_patches"]) == NUM_TIME_PATCHES
+
+        assert len(first["token_inputs"]) == expected_token_inputs_len, (
+            f"token_inputs length mismatch: got {len(first['token_inputs'])}, "
+            f"expected {expected_token_inputs_len}"
+        )
+
+        assert len(first["targets"]) == expected_targets_len, (
+            f"targets length mismatch: got {len(first['targets'])}, "
+            f"expected {expected_targets_len}"
+        )
+
+        print("\nShape check passed.")
+        print(
+            "Expected tensor shapes after Dataset reshape:\n"
+            f"  token_inputs: ({NUM_TOKENS}, {PATCH_LEN})\n"
+            f"  targets:      ({NUM_TOKENS}, {N_BANDS}, {FRAMES_PER_PATCH})"
+        )
 
 
 if __name__ == "__main__":

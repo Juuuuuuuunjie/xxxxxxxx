@@ -178,13 +178,15 @@ def main():
     # 1) 从 Lance 读取已经预处理好的训练样本
     print("\n===== Loading Processed EEG Samples From Lance =====")
 
-    dataset = LanceEEGPretrainDataset(
-        lance_path=(
-            "/Users/junjieyu/Desktop/现有论文/EEG预训练/预训练代码/codeV6/"
-            "serverData/eeg_openneuro_76ch_val_processed.lance"
-        )
+    processed_lance_path = (
+        "./serverData/eeg_openneuro_76ch_val_processed.lance"
     )
 
+    dataset = LanceEEGPretrainDataset(
+        lance_path=processed_lance_path,
+    )
+
+    print("processed_lance_path:", processed_lance_path)
     print("dataset size:", len(dataset))
 
     if len(dataset) < 2:
@@ -194,6 +196,7 @@ def main():
         )
 
     s0 = dataset[0]
+
     print("\nFirst Lance sample:")
     print("  token_inputs:          ", tuple(s0["token_inputs"].shape))
     print("  targets:               ", tuple(s0["targets"].shape))
@@ -202,13 +205,6 @@ def main():
     print("  token_valid_mask:      ", tuple(s0["token_valid_mask"].shape))
     print("  channel_valid_mask:    ", tuple(s0["channel_valid_mask"].shape))
     print("  valid channels:        ", int(s0["channel_valid_mask"].sum().item()), "/ 64")
-
-
-    # 3) 构建 Dataset
-    dataset = LanceEEGPretrainDataset(
-        lance_path="s3://eeg-pretrain-junjie/datasets/eeg-pretrain/lance/pretrain_processed.lance",
-        storage_options_path="./storage_options.json",
-    )
 
     print("dataset size:", len(dataset))
 
