@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 
 from masking import generate_block_mask, apply_token_mask
@@ -6,7 +5,6 @@ from masking import generate_block_mask, apply_token_mask
 
 def build_batch_token_mask(batch_size, num_tokens, cfg, device):
     masks = []
-
     for _ in range(batch_size):
         mask = generate_block_mask(
             num_tokens=num_tokens,
@@ -14,13 +12,25 @@ def build_batch_token_mask(batch_size, num_tokens, cfg, device):
         )
         masks.append(mask)
 
-    token_mask = torch.tensor(
-        np.stack(masks, axis=0),
+    return torch.as_tensor(
+        masks,
         dtype=torch.float32,
         device=device,
     )
 
-    return token_mask
+
+
+def move_batch_to_device(batch, device):
+    moved = {}
+    for key, value in batch.items():
+        if torch.is_tensor(value):
+            if value.device.type == "cpu":
+                moved[key] = value.to(device, non_blocking=True)
+            else:
+                moved[key] = value
+        else:
+            moved[key] = value
+    return moved
 
 
 def train_one_epoch(
@@ -32,17 +42,18 @@ def train_one_epoch(
     cfg,
 ):
     model.train()
-
     total_loss = 0.0
 
     for step, batch in enumerate(loader):
-        token_inputs = batch["token_inputs"].to(device)                    # [B, S, L]
-        targets = batch["targets"].to(device)                              # [B, S, F, K]
-        token_channel_indices = batch["token_channel_indices"].to(device)  # [B, S]
-        token_time_indices = batch["token_time_indices"].to(device)        # [B, S]
-        token_valid_mask = batch["token_valid_mask"].to(device)            # [B, S]
+        batch = move_batch_to_device(batch, device)
 
-        B, S, L = token_inputs.shape
+        token_inputs = batch["token_inputs"]                    # [B, S, L]
+        targets = batch["targets"]                              # [B, S, F, K]
+        token_channel_indices = batch["token_channel_indices"]  # [B, S]
+        token_time_indices = batch["token_time_indices"]        # [B, S]
+        token_valid_mask = batch["token_valid_mask"]            # [B, S]
+
+        B, S, _ = token_inputs.shape
 
         token_mask = build_batch_token_mask(
             batch_size=B,
@@ -68,7 +79,7 @@ def train_one_epoch(
             token_valid_mask=token_valid_mask,
         )
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
 
@@ -93,17 +104,18 @@ def validate_one_epoch(
     cfg,
 ):
     model.eval()
-
     total_loss = 0.0
 
     for batch in loader:
-        token_inputs = batch["token_inputs"].to(device)
-        targets = batch["targets"].to(device)
-        token_channel_indices = batch["token_channel_indices"].to(device)
-        token_time_indices = batch["token_time_indices"].to(device)
-        token_valid_mask = batch["token_valid_mask"].to(device)
+        batch = move_batch_to_device(batch, device)
 
-        B, S, L = token_inputs.shape
+        token_inputs = batch["token_inputs"]
+        targets = batch["targets"]
+        token_channel_indices = batch["token_channel_indices"]
+        token_time_indices = batch["token_time_indices"]
+        token_valid_mask = batch["token_valid_mask"]
+
+        B, S, _ = token_inputs.shape
 
         token_mask = build_batch_token_mask(
             batch_size=B,

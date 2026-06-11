@@ -93,11 +93,22 @@ class LanceEEGPretrainDataset(Dataset):
 
 
 def collate_fn(batch):
+    if isinstance(batch, dict):
+        return batch
+
     return {
-        "token_inputs":          torch.stack([x["token_inputs"]          for x in batch], dim=0),
-        "targets":               torch.stack([x["targets"]               for x in batch], dim=0),
-        "token_channel_indices": torch.stack([x["token_channel_indices"] for x in batch], dim=0),
-        "token_time_indices":    torch.stack([x["token_time_indices"]    for x in batch], dim=0),
-        "token_valid_mask":      torch.stack([x["token_valid_mask"]      for x in batch], dim=0),
-        "channel_valid_mask":    torch.stack([x["channel_valid_mask"]    for x in batch], dim=0),
+        "token_inputs": torch.stack([x["token_inputs"] for x in batch], dim=0),
+        "targets": torch.stack([x["targets"] for x in batch], dim=0),
+        "token_channel_indices": torch.stack(
+            [x["token_channel_indices"] for x in batch], dim=0
+        ),
+        "token_time_indices": torch.stack(
+            [x["token_time_indices"] for x in batch], dim=0
+        ),
+        "token_valid_mask": torch.stack(
+            [x["token_valid_mask"] for x in batch], dim=0
+        ),
+        "channel_valid_mask": torch.stack(
+            [x["channel_valid_mask"] for x in batch], dim=0
+        ),
     }

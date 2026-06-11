@@ -1,5 +1,4 @@
 import json
-import os
 
 import lance
 import numpy as np
@@ -15,11 +14,25 @@ def load_storage_options(storage_options_path):
     return {k: str(v) for k, v in storage_options.items()}
 
 
-
 class LanceEEGPretrainDataset(Dataset):
     """
     读取离线处理好的 EEG 预训练 Lance。
+    支持 __getitems__ 批量读取，减少每个 batch 的 Lance take 次数。
     """
+
+    COLUMNS = [
+        "num_tokens",
+        "patch_len",
+        "n_bands",
+        "frames_per_patch",
+        "n_channels",
+        "token_inputs",
+        "targets",
+        "token_channel_indices",
+        "token_time_indices",
+        "token_valid_mask",
+        "channel_valid_mask",
+    ]
 
     def __init__(self, lance_path, storage_options=None):
         self.lance_path = lance_path
@@ -45,39 +58,20 @@ class LanceEEGPretrainDataset(Dataset):
     def __len__(self):
         return self.length
 
-    def __getitem__(self, idx):
-        ds = self._open()
-
-        batch = ds.take(
-            indices=[idx],
-            columns=[
-                "num_tokens",
-                "patch_len",
-                "n_bands",
-                "frames_per_patch",
-                "n_channels",
-                "token_inputs",
-                "targets",
-                "token_channel_indices",
-                "token_time_indices",
-                "token_valid_mask",
-                "channel_valid_mask",
-            ],
-        )
-
-        row = batch.to_pylist()[0]
-
+    def _row_to_sample(self, row):
         num_tokens = int(row["num_tokens"])
         patch_len = int(row["patch_len"])
         n_bands = int(row["n_bands"])
         frames_per_patch = int(row["frames_per_patch"])
         n_channels = int(row["n_channels"])
 
-        token_inputs = np.asarray(row["token_inputs"], dtype=np.float32)
-        token_inputs = token_inputs.reshape(num_tokens, patch_len)
+        token_inputs = np.asarray(row["token_inputs"], dtype=np.float32).reshape(
+            num_tokens, patch_len
+        )
 
-        targets = np.asarray(row["targets"], dtype=np.float32)
-        targets = targets.reshape(num_tokens, n_bands, frames_per_patch)
+        targets = np.asarray(row["targets"], dtype=np.float32).reshape(
+            num_tokens, n_bands, frames_per_patch
+        )
 
         token_channel_indices = np.asarray(
             row["token_channel_indices"],
@@ -106,10 +100,34 @@ class LanceEEGPretrainDataset(Dataset):
             )
 
         return {
-            "token_inputs": torch.tensor(token_inputs, dtype=torch.float32),
-            "targets": torch.tensor(targets, dtype=torch.float32),
-            "token_channel_indices": torch.tensor(token_channel_indices, dtype=torch.long),
-            "token_time_indices": torch.tensor(token_time_indices, dtype=torch.long),
-            "token_valid_mask": torch.tensor(token_valid_mask, dtype=torch.float32),
-            "channel_valid_mask": torch.tensor(channel_valid_mask, dtype=torch.float32),
+            "token_inputs": torch.from_numpy(token_inputs),
+            "targets": torch.from_numpy(targets),
+            "token_channel_indices": torch.from_numpy(token_channel_indices),
+            "token_time_indices": torch.from_numpy(token_time_indices),
+            "token_valid_mask": torch.from_numpy(token_valid_mask),
+            "channel_valid_mask": torch.from_numpy(channel_valid_mask),
         }
+
+    def __getitem__(self, idx):
+        ds = self._open()
+
+        batch = ds.take(
+            indices=[int(idx)],
+            columns=self.COLUMNS,
+        )
+        row = batch.to_pylist()[0]
+        return self._row_to_sample(row)
+
+    def __getitems__(self, indices):
+        ds = self._open()
+
+        if len(indices) == 0:
+            return []
+
+        indices = [int(i) for i in indices]
+        batch = ds.take(
+            indices=indices,
+            columns=self.COLUMNS,
+        )
+        rows = batch.to_pylist()
+        return [self._row_to_sample(row) for row in rows]

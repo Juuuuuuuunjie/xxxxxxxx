@@ -88,17 +88,20 @@ class ModelConfig:
 
 
 @dataclass
+@dataclass
 class TrainConfig:
     """
     训练相关配置。
     """
     seed: int = 42
-    device: str = "mps"
+    device: str = "cuda"
 
     batch_size: int = 16
     num_workers: int = 0
 
-    # 你现在希望训练 10 个 epoch。
+    use_prefetch_loader: bool = True
+    prefetch: int = 2
+
     num_epochs: int = 100
 
     lr: float = 1e-3
@@ -107,8 +110,6 @@ class TrainConfig:
     print_every: int = 10
 
     save_path: str = "checkpoints/pretrain_real_set_best.pt"
-
-    # 训练结束后保存可视化图像的位置。
     vis_dir: str = "outputs/reconstruction_train"
 
 
